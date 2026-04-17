@@ -16,6 +16,11 @@ struct SettingsView: View {
                 .onChange(of: model.refreshSeconds) { _, _ in
                     model.startPolling()
                 }
+
+                Toggle("Launch app at login", isOn: Binding(
+                    get: { model.launchAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
             }
 
             Section("Backend") {
@@ -33,6 +38,9 @@ struct SettingsView: View {
                     }
                     Button("Diagnostics") {
                         model.openDiagnosticsReport()
+                    }
+                    Button("Reset and Repair") {
+                        Task { await model.repairInstallation() }
                     }
                 }
                 Text(model.statusLine)

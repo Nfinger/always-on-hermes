@@ -40,6 +40,10 @@ struct AlwaysOnHermesApp: App {
                     model.openDiagnosticsReport()
                 }
 
+                Button("Reset and Repair") {
+                    Task { await model.repairInstallation() }
+                }
+
                 Button("Quit") {
                     NSApp.terminate(nil)
                 }

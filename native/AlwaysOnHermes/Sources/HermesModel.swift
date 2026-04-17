@@ -21,6 +21,7 @@ final class HermesModel: ObservableObject {
     @Published var refreshSeconds: Double = 4
     @Published var backendURLString: String = UserDefaults.standard.string(forKey: "hermes.backendURL") ?? "http://127.0.0.1:8899"
     @Published var startupDetails = ""
+    @Published var launchAtLogin = false
 
     private var baseURL: URL { URL(string: backendURLString) ?? URL(string: "http://127.0.0.1:8899")! }
     private var timerTask: Task<Void, Never>?
@@ -42,8 +43,14 @@ final class HermesModel: ObservableObject {
         logsDirectoryURL.appendingPathComponent("diagnostics.txt")
     }
 
+    private var loginItemPlistURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.nate.alwaysonhermes.native-app.plist")
+    }
+
     init() {
         appendLog("app launch")
+        launchAtLogin = FileManager.default.fileExists(atPath: loginItemPlistURL.path)
         Task {
             await ensureBackendRunning(reason: "initial")
             await refreshAll()
@@ -67,6 +74,78 @@ final class HermesModel: ObservableObject {
         Task {
             await generateDiagnosticsReport()
             NSWorkspace.shared.open(diagnosticsURL)
+        }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        if enabled {
+            let script = """
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key>
+  <string>com.nate.alwaysonhermes.native-app</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/open</string>
+    <string>-a</string>
+    <string>Always-on Hermes</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+</dict>
+</plist>
+"""
+            do {
+                let launchAgentsDir = loginItemPlistURL.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+                try script.write(to: loginItemPlistURL, atomically: true, encoding: .utf8)
+                _ = runProcess("/bin/launchctl", ["unload", loginItemPlistURL.path])
+                _ = runProcess("/bin/launchctl", ["load", loginItemPlistURL.path])
+                launchAtLogin = true
+                statusLine = "Launch at login enabled"
+                appendLog("launch at login enabled")
+            } catch {
+                launchAtLogin = false
+                statusLine = "Failed to enable launch at login"
+                appendLog(statusLine + ": \(error.localizedDescription)")
+            }
+        } else {
+            _ = runProcess("/bin/launchctl", ["unload", loginItemPlistURL.path])
+            try? FileManager.default.removeItem(at: loginItemPlistURL)
+            launchAtLogin = false
+            statusLine = "Launch at login disabled"
+            appendLog("launch at login disabled")
+        }
+    }
+
+    func repairInstallation() async {
+        statusLine = "Running repair…"
+        appendLog("repair started")
+        sessionID = nil
+
+        let ctl = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
+
+        if FileManager.default.isExecutableFile(atPath: ctl.path) {
+            _ = runProcess(ctl.path, ["stop"])
+            _ = runProcess(ctl.path, ["overlay-stop"])
+            _ = runProcess(ctl.path, ["menubar-stop"])
+        }
+
+        _ = bootstrapPayloadIfNeeded()
+        await ensureBackendRunning(reason: "repair")
+        await refreshAll()
+        appendLog("repair complete, online=\(backendOnline)")
+        if backendOnline {
+            statusLine = "Repair complete"
+            startupDetails = "Backend recovered"
+        } else {
+            statusLine = "Repair incomplete"
+            startupDetails = "Generate diagnostics and share diagnostics.txt"
         }
     }
 
