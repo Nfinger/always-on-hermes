@@ -36,6 +36,10 @@ struct AlwaysOnHermesApp: App {
                     model.openLogsFolder()
                 }
 
+                Button("Generate Diagnostics") {
+                    model.openDiagnosticsReport()
+                }
+
                 Button("Quit") {
                     NSApp.terminate(nil)
                 }

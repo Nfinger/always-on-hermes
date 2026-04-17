@@ -2,6 +2,12 @@ import Foundation
 import SwiftUI
 import AppKit
 
+struct ProcessResult {
+    let code: Int32
+    let stdout: String
+    let stderr: String
+}
+
 @MainActor
 final class HermesModel: ObservableObject {
     static let shared = HermesModel()
@@ -14,14 +20,32 @@ final class HermesModel: ObservableObject {
     @Published var sessionID: String?
     @Published var refreshSeconds: Double = 4
     @Published var backendURLString: String = UserDefaults.standard.string(forKey: "hermes.backendURL") ?? "http://127.0.0.1:8899"
+    @Published var startupDetails = ""
 
     private var baseURL: URL { URL(string: backendURLString) ?? URL(string: "http://127.0.0.1:8899")! }
     private var timerTask: Task<Void, Never>?
     private var sessionTitle = "Always-on overlay"
+    private var isEnsuringBackend = false
+
+    private var logsDirectoryURL: URL {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/AlwaysOnHermes", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private var appLogURL: URL {
+        logsDirectoryURL.appendingPathComponent("app.log")
+    }
+
+    private var diagnosticsURL: URL {
+        logsDirectoryURL.appendingPathComponent("diagnostics.txt")
+    }
 
     init() {
+        appendLog("app launch")
         Task {
-            await ensureBackendRunning()
+            await ensureBackendRunning(reason: "initial")
             await refreshAll()
             startPolling()
         }
@@ -31,12 +55,19 @@ final class HermesModel: ObservableObject {
         UserDefaults.standard.set(backendURLString, forKey: "hermes.backendURL")
         sessionID = nil
         statusLine = "Backend URL updated"
+        appendLog("backend URL set to \(backendURLString)")
         Task { await refreshAll() }
     }
 
     func openLogsFolder() {
-        let logsURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
-        NSWorkspace.shared.open(logsURL)
+        NSWorkspace.shared.open(logsDirectoryURL)
+    }
+
+    func openDiagnosticsReport() {
+        Task {
+            await generateDiagnosticsReport()
+            NSWorkspace.shared.open(diagnosticsURL)
+        }
     }
 
     func startPolling() {
@@ -51,13 +82,24 @@ final class HermesModel: ObservableObject {
 
     func refreshAll() async {
         await checkHealth()
+        if !backendOnline {
+            await ensureBackendRunning(reason: "healthcheck")
+            await checkHealth()
+        }
         await fetchRuntimeState()
         await ensureSession()
         await fetchSuggestions()
     }
 
-    func ensureBackendRunning() async {
+    func ensureBackendRunning(reason: String) async {
+        if isEnsuringBackend { return }
         if await healthOK() { return }
+
+        isEnsuringBackend = true
+        defer { isEnsuringBackend = false }
+
+        statusLine = "Starting backend…"
+        appendLog("ensureBackendRunning reason=\(reason)")
 
         _ = bootstrapPayloadIfNeeded()
 
@@ -65,19 +107,33 @@ final class HermesModel: ObservableObject {
             .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
 
         guard FileManager.default.isExecutableFile(atPath: ctl.path) else {
+            startupDetails = "Control script missing at \(ctl.path)"
             statusLine = "Backend control script missing"
+            appendLog(startupDetails)
             return
         }
 
-        runShell([ctl.path, "install"])
-        runShell([ctl.path, "menubar-install"])
-        runShell([ctl.path, "overlay-install"])
-        runShell([ctl.path, "start"])
-        runShell([ctl.path, "overlay-start"])
+        let install = runProcess(ctl.path, ["install"])
+        let start = runProcess(ctl.path, ["start"])
+        appendLog("install code=\(install.code)")
+        appendLog("start code=\(start.code)")
 
-        try? await Task.sleep(for: .seconds(1.2))
-        backendOnline = await healthOK()
-        statusLine = backendOnline ? "Backend started" : "Backend start failed"
+        if !(await waitForHealth(timeoutSeconds: 16)) {
+            appendLog("launchctl start path failed; trying direct fallback")
+            let fallback = startBackendDirectly()
+            appendLog("direct fallback code=\(fallback.code)")
+        }
+
+        backendOnline = await waitForHealth(timeoutSeconds: 10)
+        if backendOnline {
+            statusLine = "Backend started"
+            startupDetails = "Healthy at \(baseURL.absoluteString)/health"
+            appendLog("backend online")
+        } else {
+            statusLine = "Backend start failed"
+            startupDetails = "Open diagnostics report from Settings for exact errors"
+            appendLog("backend still offline after retries")
+        }
     }
 
     func restartBackend() async {
@@ -85,10 +141,12 @@ final class HermesModel: ObservableObject {
             .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
         guard FileManager.default.isExecutableFile(atPath: ctl.path) else {
             statusLine = "Backend control script missing"
+            appendLog("restart failed: missing control script")
             return
         }
-        runShell([ctl.path, "restart"])
-        try? await Task.sleep(for: .seconds(1.2))
+        _ = runProcess(ctl.path, ["restart"])
+        appendLog("restart invoked")
+        _ = await waitForHealth(timeoutSeconds: 12)
         await refreshAll()
     }
 
@@ -106,10 +164,12 @@ final class HermesModel: ObservableObject {
                let now = dict["muted"] as? Bool {
                 muted = now
                 statusLine = now ? "Privacy mute ON" : "Privacy mute OFF"
+                appendLog("mute set to \(now)")
                 NSSound.beep()
             }
         } catch {
             statusLine = "Mute toggle failed: \(error.localizedDescription)"
+            appendLog(statusLine)
         }
     }
 
@@ -130,6 +190,15 @@ final class HermesModel: ObservableObject {
         }
     }
 
+    private func waitForHealth(timeoutSeconds: Int) async -> Bool {
+        let steps = max(1, timeoutSeconds * 2)
+        for _ in 0..<steps {
+            if await healthOK() { return true }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return false
+    }
+
     private func fetchRuntimeState() async {
         do {
             let (data, _) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("runtime-state"))
@@ -138,7 +207,7 @@ final class HermesModel: ObservableObject {
                 muted = m
             }
         } catch {
-            // ignore
+            // ignore transient failures
         }
     }
 
@@ -165,6 +234,7 @@ final class HermesModel: ObservableObject {
             }
         } catch {
             statusLine = "Session create failed"
+            appendLog(statusLine)
         }
     }
 
@@ -203,44 +273,109 @@ final class HermesModel: ObservableObject {
         guard let payloadRoot = Bundle.main.resourceURL?.appendingPathComponent("payload", isDirectory: true),
               fm.fileExists(atPath: payloadRoot.path) else {
             statusLine = "Bundled payload missing"
+            startupDetails = "Bundle payload directory not found"
+            appendLog(statusLine)
             return false
         }
 
         _ = runProcess("/bin/mkdir", ["-p", targetRoot.deletingLastPathComponent().path])
         let rsyncResult = runProcess("/usr/bin/rsync", ["-a", "--delete", payloadRoot.path + "/", targetRoot.path + "/"])
-        if rsyncResult != 0 {
+        if rsyncResult.code != 0 {
             statusLine = "Payload sync failed"
+            startupDetails = rsyncResult.stderr
+            appendLog("payload sync failed: \(rsyncResult.stderr)")
             return false
         }
 
         _ = runProcess("/bin/chmod", ["+x", targetCtl.path])
         statusLine = "Installed bundled backend"
+        appendLog("bundled payload installed")
         return true
     }
 
-    @discardableResult
-    private func runProcess(_ executable: String, _ args: [String]) -> Int32 {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            return proc.terminationStatus
-        } catch {
-            return -1
+    private func startBackendDirectly() -> ProcessResult {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes/tools/interview-copilot", isDirectory: true)
+        let uvicorn = root.appendingPathComponent(".venv/bin/uvicorn")
+        let log = appLogURL.path.replacingOccurrences(of: "\"", with: "")
+        let cmd = "cd \(shellQuote(root.path)) && nohup \(shellQuote(uvicorn.path)) app.main:app --host 127.0.0.1 --port 8899 >> \(shellQuote(log)) 2>&1 &"
+        return runProcess("/bin/bash", ["-lc", cmd])
+    }
+
+    private func generateDiagnosticsReport() async {
+        let ctl = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
+
+        var report: [String] = []
+        report.append("Always-on Hermes Diagnostics")
+        report.append("Generated: \(ISO8601DateFormatter().string(from: Date()))")
+        report.append("Backend URL: \(backendURLString)")
+        report.append("Backend online: \(backendOnline)")
+        report.append("Status: \(statusLine)")
+        report.append("Startup details: \(startupDetails)")
+        report.append("")
+
+        if FileManager.default.isExecutableFile(atPath: ctl.path) {
+            let status = runProcess(ctl.path, ["status"])
+            report.append("=== hermes_shoulderctl.sh status (code \(status.code)) ===")
+            report.append(status.stdout)
+            report.append(status.stderr)
+
+            let backendLogs = runProcess("/bin/bash", ["-lc", "tail -n 120 /tmp/always-on-hermes.out.log /tmp/always-on-hermes.err.log 2>/dev/null || true"])
+            report.append("=== backend logs tail ===")
+            report.append(backendLogs.stdout)
+        } else {
+            report.append("control script missing: \(ctl.path)")
+        }
+
+        let appLogTail = runProcess("/bin/bash", ["-lc", "tail -n 150 \(shellQuote(appLogURL.path)) 2>/dev/null || true"])
+        report.append("=== native app log tail ===")
+        report.append(appLogTail.stdout)
+
+        let text = report.joined(separator: "\n")
+        try? text.write(to: diagnosticsURL, atomically: true, encoding: .utf8)
+        appendLog("diagnostics generated at \(diagnosticsURL.path)")
+    }
+
+    private func appendLog(_ message: String) {
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(ts)] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: appLogURL.path),
+               let handle = try? FileHandle(forWritingTo: appLogURL) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: appLogURL)
+            }
         }
     }
 
-    private func runShell(_ args: [String]) {
-        guard let first = args.first else { return }
+    private func shellQuote(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
+    }
+
+    @discardableResult
+    private func runProcess(_ executable: String, _ args: [String]) -> ProcessResult {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: first)
-        proc.arguments = Array(args.dropFirst())
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try? proc.run()
+        let out = Pipe()
+        let err = Pipe()
+        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.arguments = args
+        proc.standardOutput = out
+        proc.standardError = err
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let outText = String(data: outData, encoding: .utf8) ?? ""
+            let errText = String(data: errData, encoding: .utf8) ?? ""
+            return ProcessResult(code: proc.terminationStatus, stdout: outText, stderr: errText)
+        } catch {
+            return ProcessResult(code: -1, stdout: "", stderr: error.localizedDescription)
+        }
     }
 }

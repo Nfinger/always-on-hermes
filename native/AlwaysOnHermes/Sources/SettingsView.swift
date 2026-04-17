@@ -31,10 +31,19 @@ struct SettingsView: View {
                     Button("Open logs") {
                         model.openLogsFolder()
                     }
+                    Button("Diagnostics") {
+                        model.openDiagnosticsReport()
+                    }
                 }
                 Text(model.statusLine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if !model.startupDetails.isEmpty {
+                    Text(model.startupDetails)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
         }
         .padding(16)
