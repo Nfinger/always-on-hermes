@@ -4,6 +4,8 @@ import AppKit
 
 @MainActor
 final class HermesModel: ObservableObject {
+    static let shared = HermesModel()
+
     @Published var backendOnline = false
     @Published var muted = false
     @Published var statusLine = "Starting…"
@@ -11,8 +13,9 @@ final class HermesModel: ObservableObject {
     @Published var actions: [String] = []
     @Published var sessionID: String?
     @Published var refreshSeconds: Double = 4
+    @Published var backendURLString: String = UserDefaults.standard.string(forKey: "hermes.backendURL") ?? "http://127.0.0.1:8899"
 
-    private let baseURL = URL(string: "http://127.0.0.1:8899")!
+    private var baseURL: URL { URL(string: backendURLString) ?? URL(string: "http://127.0.0.1:8899")! }
     private var timerTask: Task<Void, Never>?
     private var sessionTitle = "Always-on overlay"
 
@@ -24,19 +27,16 @@ final class HermesModel: ObservableObject {
         }
     }
 
-    func bumpOverlay() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSApp.windows.forEach { win in
-                if win.title.contains("Hermes Overlay") {
-                    win.level = .floating
-                    win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-                    win.isMovableByWindowBackground = true
-                    win.standardWindowButton(.miniaturizeButton)?.isHidden = true
-                    win.standardWindowButton(.zoomButton)?.isHidden = true
-                    win.makeKeyAndOrderFront(nil)
-                }
-            }
-        }
+    func saveBackendURL() {
+        UserDefaults.standard.set(backendURLString, forKey: "hermes.backendURL")
+        sessionID = nil
+        statusLine = "Backend URL updated"
+        Task { await refreshAll() }
+    }
+
+    func openLogsFolder() {
+        let logsURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
+        NSWorkspace.shared.open(logsURL)
     }
 
     func startPolling() {
@@ -76,6 +76,20 @@ final class HermesModel: ObservableObject {
         runShell([ctl.path, "overlay-start"])
 
         try? await Task.sleep(for: .seconds(1.2))
+        backendOnline = await healthOK()
+        statusLine = backendOnline ? "Backend started" : "Backend start failed"
+    }
+
+    func restartBackend() async {
+        let ctl = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
+        guard FileManager.default.isExecutableFile(atPath: ctl.path) else {
+            statusLine = "Backend control script missing"
+            return
+        }
+        runShell([ctl.path, "restart"])
+        try? await Task.sleep(for: .seconds(1.2))
+        await refreshAll()
     }
 
     func toggleMute() async {

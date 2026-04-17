@@ -19,13 +19,22 @@ struct SettingsView: View {
             }
 
             Section("Backend") {
-                Text("Endpoint: http://127.0.0.1:8899")
-                Button("Attempt backend restart") {
-                    Task {
-                        await model.ensureBackendRunning()
-                        await model.refreshAll()
+                TextField("Backend URL", text: $model.backendURLString)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Save URL") {
+                        model.saveBackendURL()
+                    }
+                    Button("Restart backend") {
+                        Task { await model.restartBackend() }
+                    }
+                    Button("Open logs") {
+                        model.openLogsFolder()
                     }
                 }
+                Text(model.statusLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(16)
