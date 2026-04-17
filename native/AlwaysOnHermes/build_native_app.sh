@@ -26,7 +26,9 @@ chmod +x "$MACOS_DIR/$BIN_NAME"
 # Bundle backend payload so target Macs do not need manual pip/setup.
 rsync -a --delete "$PROJECT_ROOT/app/" "$PAYLOAD_DIR/app/"
 rsync -a --delete "$PROJECT_ROOT/scripts/" "$PAYLOAD_DIR/scripts/"
-rsync -a --delete "$PROJECT_ROOT/.venv/" "$PAYLOAD_DIR/.venv/"
+# Copy venv with symlinks dereferenced to avoid invalid bundle links that trigger
+# Gatekeeper "app is damaged" on unsigned builds.
+rsync -aL --delete "$PROJECT_ROOT/.venv/" "$PAYLOAD_DIR/.venv/"
 cp -f "$PROJECT_ROOT/requirements.txt" "$PAYLOAD_DIR/requirements.txt"
 cp -f "$PROJECT_ROOT/.env.example" "$PAYLOAD_DIR/.env.example"
 mkdir -p "$PAYLOAD_DIR/data"
@@ -59,6 +61,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# Ad-hoc sign whole bundle so Gatekeeper shows standard unsigned warning instead
+# of "app is damaged" due malformed embedded signature state.
+codesign --force --deep --sign - "$APP_DIR"
 
 mkdir -p "$OUT_DIR/dmg-src"
 rm -rf "$OUT_DIR/dmg-src/${APP_NAME}.app"
