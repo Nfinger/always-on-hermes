@@ -1,0 +1,14 @@
+Always-on Hermes installer (zero-touch)
+
+1) Double-click always-on-hermes-unsigned.pkg
+2) Click through install prompts
+3) Wait ~10-20 seconds after install completes
+
+Expected behavior (no terminal required):
+- Backend starts automatically
+- Menubar companion starts automatically
+- Native overlay starts automatically
+
+If something fails, logs are now guaranteed in one of:
+- /private/var/tmp/always-on-hermes-postinstall.log
+- ~/Library/Logs/always-on-hermes-postinstall.log
