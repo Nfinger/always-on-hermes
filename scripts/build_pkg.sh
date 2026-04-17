@@ -7,12 +7,14 @@ OUT_DIR="$BASE_DIR/dist"
 PKG_ROOT="$OUT_DIR/pkgroot"
 PKG_SCRIPTS_DIR="$OUT_DIR/pkgscripts"
 PAYLOAD_DIR="$PKG_ROOT/usr/local/share/always-on-hermes/interview-copilot"
+APP_NAME="Always-on Hermes"
+APP_BUNDLE="$OUT_DIR/${APP_NAME}.app"
 IDENTIFIER="com.nate.alwaysonhermes"
-VERSION="0.6.0"
+VERSION="0.6.1"
 
 mkdir -p "$OUT_DIR"
-rm -rf "$PKG_ROOT" "$PKG_SCRIPTS_DIR"
-mkdir -p "$PAYLOAD_DIR" "$PKG_SCRIPTS_DIR"
+rm -rf "$PKG_ROOT" "$PKG_SCRIPTS_DIR" "$APP_BUNDLE"
+mkdir -p "$PAYLOAD_DIR" "$PKG_SCRIPTS_DIR" "$PKG_ROOT/Applications"
 
 rsync -az --delete \
   --exclude '__pycache__' \
@@ -21,6 +23,20 @@ rsync -az --delete \
   --exclude '.git' \
   --exclude 'dist' \
   "$BASE_DIR/" "$PAYLOAD_DIR/"
+
+cat >"$OUT_DIR/launcher.applescript" <<'APPLESCRIPT'
+on run
+  try
+    do shell script "/bin/bash -lc 'if [ -x \"$HOME/.hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh\" ]; then \"$HOME/.hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh\" install >/dev/null 2>&1 || true; \"$HOME/.hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh\" menubar-install >/dev/null 2>&1 || true; \"$HOME/.hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh\" overlay-install >/dev/null 2>&1 || true; \"$HOME/.hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh\" overlay-start >/dev/null 2>&1 || true; echo ok; else echo missing; fi'"
+    display notification "Overlay launched. Check menu bar for 🧠." with title "Always-on Hermes"
+  on error errMsg
+    display dialog "Always-on Hermes couldn't start: " & errMsg buttons {"OK"} default button "OK"
+  end try
+end run
+APPLESCRIPT
+
+osacompile -o "$APP_BUNDLE" "$OUT_DIR/launcher.applescript"
+cp -R "$APP_BUNDLE" "$PKG_ROOT/Applications/${APP_NAME}.app"
 
 cat >"$PKG_SCRIPTS_DIR/postinstall" <<'EOF'
 #!/usr/bin/env bash
