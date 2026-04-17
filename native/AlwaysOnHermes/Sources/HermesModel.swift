@@ -378,8 +378,10 @@ final class HermesModel: ObservableObject {
         let targetRoot = fm.homeDirectoryForCurrentUser
             .appendingPathComponent(".hermes/tools/interview-copilot", isDirectory: true)
         let targetCtl = targetRoot.appendingPathComponent("scripts/hermes_shoulderctl.sh")
+        let targetUvicorn = targetRoot.appendingPathComponent(".venv/bin/uvicorn")
 
-        if fm.isExecutableFile(atPath: targetCtl.path) {
+        // Treat install as healthy only when both control script and venv runtime exist.
+        if fm.isExecutableFile(atPath: targetCtl.path), fm.isExecutableFile(atPath: targetUvicorn.path) {
             return true
         }
 
