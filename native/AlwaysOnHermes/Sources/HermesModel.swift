@@ -310,15 +310,35 @@ final class HermesModel: ObservableObject {
             req.httpMethod = "POST"
             req.httpBody = data
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let (respData, _) = try await URLSession.shared.data(for: req)
+            let (respData, response) = try await URLSession.shared.data(for: req)
+
+            guard let http = response as? HTTPURLResponse else {
+                statusLine = "Session create failed (no HTTP response)"
+                appendLog(statusLine)
+                return
+            }
+
+            if !(200..<300).contains(http.statusCode) {
+                let body = String(data: respData, encoding: .utf8) ?? ""
+                statusLine = "Session create failed (\(http.statusCode))"
+                startupDetails = body.isEmpty ? "No error body from backend" : body
+                appendLog("session create failed status=\(http.statusCode) body=\(body)")
+                return
+            }
 
             if let dict = try JSONSerialization.jsonObject(with: respData) as? [String: Any],
                let sid = dict["session_id"] as? String {
                 sessionID = sid
+                appendLog("session created \(sid)")
+            } else {
+                statusLine = "Session create failed (bad JSON)"
+                startupDetails = String(data: respData, encoding: .utf8) ?? ""
+                appendLog(statusLine)
             }
         } catch {
             statusLine = "Session create failed"
-            appendLog(statusLine)
+            startupDetails = error.localizedDescription
+            appendLog("\(statusLine): \(error.localizedDescription)")
         }
     }
 
@@ -333,7 +353,15 @@ final class HermesModel: ObservableObject {
             req.httpBody = data
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-            let (respData, _) = try await URLSession.shared.data(for: req)
+            let (respData, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+                // Session likely belonged to a previous backend process.
+                appendLog("session \(sid) not found; recreating")
+                sessionID = nil
+                await ensureSession()
+                return
+            }
+
             if let dict = try JSONSerialization.jsonObject(with: respData) as? [String: Any] {
                 suggestions = dict["suggestions"] as? [String] ?? []
                 actions = dict["actions"] as? [String] ?? []
@@ -341,6 +369,7 @@ final class HermesModel: ObservableObject {
             }
         } catch {
             statusLine = "Suggestion poll failed"
+            startupDetails = error.localizedDescription
         }
     }
 
