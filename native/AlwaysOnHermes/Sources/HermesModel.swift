@@ -19,11 +19,15 @@ final class HermesModel: ObservableObject {
     @Published var actions: [String] = []
     @Published var sessionID: String?
     @Published var refreshSeconds: Double = 4
-    @Published var backendURLString: String = UserDefaults.standard.string(forKey: "hermes.backendURL") ?? "http://127.0.0.1:8899"
+    @Published var backendURLString: String = UserDefaults.standard.string(forKey: "hermes.backendURL") ?? "http://homes-mac-mini.tail5d0f8d.ts.net:8899"
     @Published var startupDetails = ""
     @Published var launchAtLogin = false
 
     private var baseURL: URL { URL(string: backendURLString) ?? URL(string: "http://127.0.0.1:8899")! }
+    private var isLocalBackendTarget: Bool {
+        guard let host = baseURL.host?.lowercased() else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
     private var timerTask: Task<Void, Never>?
     private var sessionTitle = "Always-on overlay"
     private var isEnsuringBackend = false
@@ -128,6 +132,19 @@ final class HermesModel: ObservableObject {
         appendLog("repair started")
         sessionID = nil
 
+        if !isLocalBackendTarget {
+            // In remote mode, repair just refreshes connectivity/session.
+            await refreshAll()
+            if backendOnline {
+                statusLine = "Remote backend healthy"
+                startupDetails = "Using \(baseURL.absoluteString)"
+            } else {
+                statusLine = "Remote backend unreachable"
+                startupDetails = "Check Mac mini service + Tailscale, then retry"
+            }
+            return
+        }
+
         let ctl = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
 
@@ -179,10 +196,18 @@ final class HermesModel: ObservableObject {
         if isEnsuringBackend { return }
         if await healthOK() { return }
 
+        // Remote-first mode: do not attempt any local Python bootstrap.
+        if !isLocalBackendTarget {
+            statusLine = "Waiting for remote backend…"
+            startupDetails = "Remote mode at \(baseURL.absoluteString)"
+            appendLog("remote mode skip local bootstrap: \(baseURL.absoluteString)")
+            return
+        }
+
         isEnsuringBackend = true
         defer { isEnsuringBackend = false }
 
-        statusLine = "Starting backend…"
+        statusLine = "Starting local backend…"
         appendLog("ensureBackendRunning reason=\(reason)")
 
         let bootstrapped = bootstrapPayloadIfNeeded()
@@ -215,9 +240,15 @@ final class HermesModel: ObservableObject {
             startupDetails = "Healthy at \(baseURL.absoluteString)/health"
             appendLog("backend online")
         } else {
-            statusLine = "Backend start failed"
-            startupDetails = "Open diagnostics report from Settings for exact errors"
             appendLog("backend still offline after retries")
+            if await trySwitchToRemoteBackend() {
+                statusLine = "Switched to remote backend"
+                startupDetails = "Using \(baseURL.absoluteString)"
+                appendLog("remote backend reachable after local failure")
+            } else {
+                statusLine = "Backend start failed"
+                startupDetails = "Open diagnostics report from Settings for exact errors"
+            }
         }
     }
 
@@ -280,6 +311,30 @@ final class HermesModel: ObservableObject {
         for _ in 0..<steps {
             if await healthOK() { return true }
             try? await Task.sleep(for: .milliseconds(500))
+        }
+        return false
+    }
+
+    private func trySwitchToRemoteBackend() async -> Bool {
+        let candidates = [
+            "http://homes-mac-mini.tail5d0f8d.ts.net:8899",
+            "http://100.77.195.16:8899"
+        ]
+
+        for candidate in candidates {
+            guard let url = URL(string: candidate)?.appendingPathComponent("health") else { continue }
+            do {
+                let (_, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                    backendURLString = candidate
+                    UserDefaults.standard.set(candidate, forKey: "hermes.backendURL")
+                    sessionID = nil
+                    appendLog("auto-switched backend URL to \(candidate)")
+                    return true
+                }
+            } catch {
+                appendLog("remote candidate failed \(candidate): \(error.localizedDescription)")
+            }
         }
         return false
     }
