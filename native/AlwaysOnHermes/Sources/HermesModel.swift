@@ -185,7 +185,8 @@ final class HermesModel: ObservableObject {
         statusLine = "Starting backend…"
         appendLog("ensureBackendRunning reason=\(reason)")
 
-        _ = bootstrapPayloadIfNeeded()
+        let bootstrapped = bootstrapPayloadIfNeeded()
+        appendLog("bootstrap status=\(bootstrapped)")
 
         let ctl = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".hermes/tools/interview-copilot/scripts/hermes_shoulderctl.sh")
@@ -411,9 +412,24 @@ final class HermesModel: ObservableObject {
     private func startBackendDirectly() -> ProcessResult {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".hermes/tools/interview-copilot", isDirectory: true)
-        let uvicorn = root.appendingPathComponent(".venv/bin/uvicorn")
+
+        let preferred = root.appendingPathComponent(".venv/bin/uvicorn")
+        let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("payload/.venv/bin/uvicorn")
+
+        let uvicornPath: String
+        if FileManager.default.isExecutableFile(atPath: preferred.path) {
+            uvicornPath = preferred.path
+        } else if let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) {
+            uvicornPath = bundled.path
+            appendLog("using bundled uvicorn fallback")
+        } else {
+            appendLog("no uvicorn binary available (target or bundled)")
+            return ProcessResult(code: 127, stdout: "", stderr: "uvicorn not found")
+        }
+
         let log = appLogURL.path.replacingOccurrences(of: "\"", with: "")
-        let cmd = "cd \(shellQuote(root.path)) && nohup \(shellQuote(uvicorn.path)) app.main:app --host 127.0.0.1 --port 8899 >> \(shellQuote(log)) 2>&1 &"
+        let cmd = "cd \(shellQuote(root.path)) && nohup \(shellQuote(uvicornPath)) app.main:app --host 127.0.0.1 --port 8899 >> \(shellQuote(log)) 2>&1 &"
         return runProcess("/bin/bash", ["-lc", cmd])
     }
 
