@@ -2,6 +2,11 @@
 
 Real-time shoulder assistant (interviews + meetings + general ambient mode).
 
+Native macOS rebuild (SwiftUI) is now under:
+- `native/AlwaysOnHermes/`
+- Build: `scripts/native_build.sh`
+- Launch: `scripts/native_launch.sh`
+
 What it does now:
 - Creates sessions with mode: `interview|meeting|general`
 - Ingests live transcript chunks (manual text or mic auto-capture)
