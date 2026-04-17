@@ -51,6 +51,7 @@ final class HermesModel: ObservableObject {
     init() {
         appendLog("app launch")
         launchAtLogin = FileManager.default.fileExists(atPath: loginItemPlistURL.path)
+        cleanupLegacyAgents()
         Task {
             await ensureBackendRunning(reason: "initial")
             await refreshAll()
@@ -135,6 +136,10 @@ final class HermesModel: ObservableObject {
             _ = runProcess(ctl.path, ["overlay-stop"])
             _ = runProcess(ctl.path, ["menubar-stop"])
         }
+
+        cleanupLegacyAgents()
+        _ = runProcess("/usr/bin/pkill", ["-f", "ui/native_overlay.py"])
+        _ = runProcess("/usr/bin/pkill", ["-f", "ui/menubar_app.py"])
 
         _ = bootstrapPayloadIfNeeded()
         await ensureBackendRunning(reason: "repair")
@@ -414,6 +419,24 @@ final class HermesModel: ObservableObject {
         let text = report.joined(separator: "\n")
         try? text.write(to: diagnosticsURL, atomically: true, encoding: .utf8)
         appendLog("diagnostics generated at \(diagnosticsURL.path)")
+    }
+
+    private func cleanupLegacyAgents() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let legacyPlists: [URL] = [
+            home.appendingPathComponent("Library/LaunchAgents/com.nate.alwaysonhermes.menubar.plist"),
+            home.appendingPathComponent("Library/LaunchAgents/com.nate.alwaysonhermes.overlay.plist"),
+            home.appendingPathComponent("Library/LaunchAgents/com.nate.alwaysonhermes.ui.plist")
+        ]
+
+        for plist in legacyPlists {
+            _ = runProcess("/bin/launchctl", ["unload", plist.path])
+            _ = try? FileManager.default.removeItem(at: plist)
+        }
+
+        _ = runProcess("/usr/bin/pkill", ["-f", "ui/native_overlay.py"])
+        _ = runProcess("/usr/bin/pkill", ["-f", "ui/menubar_app.py"])
+        appendLog("legacy agents cleaned")
     }
 
     private func appendLog(_ message: String) {
